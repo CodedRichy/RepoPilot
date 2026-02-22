@@ -44,6 +44,7 @@ def cluster_commits(
     """
     # TODO: Validate that the input list is chronologically sorted
 
+    # Handle single commit edge-case
     # TODO: Handle the "Single Massive Commit" edge case early (Cluster size 1)
 
     # Primary Iteration 
@@ -73,6 +74,5 @@ def cluster_commits(
     
     # TODO: Call _generate_cluster_id for each finalized cluster
     
-    # TODO: Return final List[ClusterGroup]
-    
+    # Return output
     return []
