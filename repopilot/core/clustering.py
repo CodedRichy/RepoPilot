@@ -1,5 +1,5 @@
-from typing import Sequence, List
 import hashlib
+from typing import Sequence, List
 
 from repopilot.core.models import CommitNode, ClusterGroup
 
@@ -49,30 +49,32 @@ def cluster_commits(
     clusters: List[ClusterGroup] = []
     current_cluster_commits: List[CommitNode] = []
     
-    # Validation assumption: Input sequence is chronologically sorted (oldest to newest)
+    # Assumption: The input list `commits` is chronologically sorted (oldest to newest).
+    # This must be guaranteed by the upstream git reader layer.
     
     previous_commit = None
     
     for current_commit in commits:
         if previous_commit is None:
-            # First commit initializes the first cluster
+            # First commit of the entire array initializes the first cluster
             current_cluster_commits.append(current_commit)
             previous_commit = current_commit
             continue
             
         # --- Rule Evaluations (Hard Stops) ---
-        
         seal_cluster = False
         closure_reason = ""
         
         # Rule D: System Boundary
         # IF previous_commit author matches the system daemon, it forces a boundary.
+        # This prevents clustering user commits together with system auto-commits.
         if previous_commit.author == "repopilot-daemon":
             seal_cluster = True
             closure_reason = "SYSTEM_COMMIT"
             
         # Rule A: Inactivity Timeout
         # Evaluated if no higher-priority boundary matched.
+        # IF the time gap between the previous commit and the current one exceeds the threshold.
         elif not seal_cluster:
             time_delta = current_commit.timestamp - previous_commit.timestamp
             if time_delta.total_seconds() > inactivity_threshold_seconds:
@@ -80,7 +82,7 @@ def cluster_commits(
                 closure_reason = "INACTIVITY_TIMEOUT"
         
         if seal_cluster:
-            # Seal the current cluster and push it
+            # A boundary condition was met. We must seal the accumulated cluster.
             first_hash = current_cluster_commits[0].hash
             last_hash = current_cluster_commits[-1].hash
             
@@ -94,15 +96,15 @@ def cluster_commits(
                 )
             )
             
-            # Start a new cluster
+            # Start a new cluster with the current commit
             current_cluster_commits = [current_commit]
         else:
-            # Accumulate into current cluster
+            # No boundary met. Accumulate the current commit into the ongoing cluster.
             current_cluster_commits.append(current_commit)
             
         previous_commit = current_commit
         
-    # Flush the final cluster map
+    # Flush the final open cluster segment
     if current_cluster_commits:
         first_hash = current_cluster_commits[0].hash
         last_hash = current_cluster_commits[-1].hash
@@ -113,7 +115,7 @@ def cluster_commits(
                 commits=current_cluster_commits,
                 start_timestamp=current_cluster_commits[0].timestamp,
                 end_timestamp=current_cluster_commits[-1].timestamp,
-                closure_reason="HEAD"  # The final open cluster is capped by the HEAD position
+                closure_reason="HEAD"  # The final open cluster is inherently capped by HEAD
             )
         )
         
