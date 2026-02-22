@@ -1,11 +1,10 @@
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, Dict
 
 from repopilot.core.git_reader import fetch_commits
 from repopilot.core.clustering import cluster_commits
 from repopilot.core.classification import classify_cluster
 from repopilot.core.policy import evaluate_regeneration_policy
-from repopilot.core.git_writer import stage_changes, commit_changes
 
 """
 RepoPilot Core: Execution Pipeline Orchestrator
@@ -13,9 +12,10 @@ RepoPilot Core: Execution Pipeline Orchestrator
 ### Orchestration Contract
 - **Responsibility:** Strictly routes data between perfectly isolated foundational modules.
   It fetches raw logs, pumps them through functional engines, evaluates deterministic policies,
-  and conditionally passes authorization triggers back out or down to the destructive git mutator.
+  and emits authorization signals back to the system boundary.
 - **NOT** Responsible For: Logging, throwing I/O exceptions, evaluating active branches, 
-  understanding branch logic, or exposing internal domain types like PolicyDecision to callers.
+  understanding branch logic, exposing internal domain types to callers, selecting specific
+  clusters, generating documentation, or invoking destructive Git mutations.
 - **Constraints:** NO internal heuristics, loops resolving defaults, or branching decisions.
   Every behavioral trigger MUST be injected exactly as received.
 """
@@ -45,12 +45,13 @@ def execute_analysis_cycle(
     seconds_since_last_changelog_regen: int,
     seconds_since_last_architecture_regen: int,
     seconds_since_last_metrics_regen: int
-) -> None:
+) -> Dict[str, bool]:
     """
     Orchestrates a single deterministic run of the RepoPilot engine.
     
-    Data flows linearly: GitReader -> Clustering -> Classification -> Policy -> (Conditional) GitWriter.
+    Data flows linearly: GitReader -> Clustering -> Classification -> Policy.
     Returns NO complex domain types to the system boundary.
+    Emits raw boolean signals dictating which generation pipelines are authorized.
     """
     # 1. READ
     # TODO: Call `fetch_commits(repo_path, limit=commit_history_limit)`
@@ -59,16 +60,15 @@ def execute_analysis_cycle(
     # TODO: Call `cluster_commits(commits, inactivity_threshold_seconds)`
     
     # 3. CLASSIFY 
-    # TODO: Isolate the target cluster (e.g. the most recent or active boundary window)
+    # TODO: Pass the clusters definitively output by the prior step to the classification engine.
     # Call `classify_cluster(target_cluster, [injected_params])`
     
     # 4. POLICY DECISION
     # TODO: Call `evaluate_regeneration_policy(...)` using the injected `is_authorized_branch` 
     # context instead of actual branch names.
     
-    # 5. DOCUMENT GENERATION (EXTERNALIZED)
-    # TODO: IF policy allows -> Invoke Markdown serializers & dump to disk.
+    # 5. EMIT AUTHORIZATION SIGNALS
+    # TODO: Map the inner policy decision result to a plain Python Dictionary dictating 
+    # what outputs are permitted (e.g. {"regenerate_changelog": True, ...}) and return it.
     
-    # 6. WRITE (CONDITIONAL)
-    # TODO: IF docs were generated -> Call `stage_changes(...)` and `commit_changes(...)`.
-    pass
+    return {}
