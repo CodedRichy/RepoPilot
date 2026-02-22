@@ -1,4 +1,5 @@
 from typing import Sequence, List
+import hashlib
 
 from repopilot.core.models import CommitNode, ClusterGroup
 
@@ -20,10 +21,11 @@ Guarantees & Constraints:
 def _generate_cluster_id(first_commit_hash: str, last_commit_hash: str) -> str:
     """
     Deterministically calculates a cluster ID based solely on bounding hashes.
-    Implementation is abstracted downstream; must remain side-effect free and stable.
+    
+    Formula: sha256(first_hash + last_hash)
     """
-    # TODO: Implement deterministic ID generation logic
-    pass
+    hash_input = f"{first_commit_hash}{last_commit_hash}".encode('utf-8')
+    return hashlib.sha256(hash_input).hexdigest()
 
 def cluster_commits(
     commits: Sequence[CommitNode],
@@ -41,32 +43,78 @@ def cluster_commits(
     Returns:
         List[ClusterGroup]: A sequence of distinct, non-overlapping clusters.
     """
-    # TODO: Validate that the input sequence is chronologically sorted
+    if not commits:
+        return []
 
-    # TODO: Handle the "Single Massive Commit" edge case (Cluster size 1)
-
-    # Primary Iteration 
-    # TODO: Loop over consecutive commit pairs (previous_commit, current_commit)
-
-    # --- Rule Evaluations (Hard Stops) ---
+    clusters: List[ClusterGroup] = []
+    current_cluster_commits: List[CommitNode] = []
     
-    # TODO: Evaluate Rule A (Inactivity Timeout)
-    # IF (current_commit.timestamp - previous_commit.timestamp).seconds > inactivity_threshold_seconds
-    # THEN seal current cluster.
-
-    # TODO: Evaluate Rule D (System Boundary)
-    # IF previous_commit.author == "repopilot-daemon"
-    # THEN seal current cluster immediately.
-
-    # Note on Rule B & C (Branch Shifts & Tag Boundaries):
-    # This engine assumes a linear, pre-sliced sequence. Topological boundaries
-    # (jumping branches or encountering tags) must be resolved by the GitReader
-    # layer passing partitioned sequences into this function.
-
-    # TODO: Map accumulated subsets into formal `ClusterGroup` dataclasses
-    # Ensure start_timestamp <= end_timestamp
+    # Validation assumption: Input sequence is chronologically sorted (oldest to newest)
     
-    # TODO: Call _generate_cluster_id for each finalized cluster
+    previous_commit = None
     
-    # Return output
-    return []
+    for current_commit in commits:
+        if previous_commit is None:
+            # First commit initializes the first cluster
+            current_cluster_commits.append(current_commit)
+            previous_commit = current_commit
+            continue
+            
+        # --- Rule Evaluations (Hard Stops) ---
+        
+        seal_cluster = False
+        closure_reason = ""
+        
+        # Rule D: System Boundary
+        # IF previous_commit author matches the system daemon, it forces a boundary.
+        if previous_commit.author == "repopilot-daemon":
+            seal_cluster = True
+            closure_reason = "SYSTEM_COMMIT"
+            
+        # Rule A: Inactivity Timeout
+        # Evaluated if no higher-priority boundary matched.
+        elif not seal_cluster:
+            time_delta = current_commit.timestamp - previous_commit.timestamp
+            if time_delta.total_seconds() > inactivity_threshold_seconds:
+                seal_cluster = True
+                closure_reason = "INACTIVITY_TIMEOUT"
+        
+        if seal_cluster:
+            # Seal the current cluster and push it
+            first_hash = current_cluster_commits[0].hash
+            last_hash = current_cluster_commits[-1].hash
+            
+            clusters.append(
+                ClusterGroup(
+                    cluster_id=_generate_cluster_id(first_hash, last_hash),
+                    commits=current_cluster_commits,
+                    start_timestamp=current_cluster_commits[0].timestamp,
+                    end_timestamp=current_cluster_commits[-1].timestamp,
+                    closure_reason=closure_reason
+                )
+            )
+            
+            # Start a new cluster
+            current_cluster_commits = [current_commit]
+        else:
+            # Accumulate into current cluster
+            current_cluster_commits.append(current_commit)
+            
+        previous_commit = current_commit
+        
+    # Flush the final cluster map
+    if current_cluster_commits:
+        first_hash = current_cluster_commits[0].hash
+        last_hash = current_cluster_commits[-1].hash
+        
+        clusters.append(
+            ClusterGroup(
+                cluster_id=_generate_cluster_id(first_hash, last_hash),
+                commits=current_cluster_commits,
+                start_timestamp=current_cluster_commits[0].timestamp,
+                end_timestamp=current_cluster_commits[-1].timestamp,
+                closure_reason="HEAD"  # The final open cluster is capped by the HEAD position
+            )
+        )
+        
+    return clusters
