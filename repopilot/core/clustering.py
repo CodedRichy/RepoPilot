@@ -1,66 +1,78 @@
-from typing import List, Optional
 import hashlib
+from typing import List
 
 from repopilot.core.models import CommitNode, ClusterGroup
 
 """
-RepoPilot Core: Commit Clustering Engine
+RepoPilot Core: Deterministic Commit Clustering Engine
 
 This module guarantees deterministic parsing of an array of contiguous CommitNodes
 into distinct, non-overlapping ClusterGroups based on predefined heuristic boundaries.
 
-Rules:
-- NEVER import git_reader or git_writer.
-- ALL state required for clustering must be injected via function arguments.
-- Identical arrays of CommitNodes MUST always yield identical ClusterGroups.
-- The 120-minute inactivity window is the default CLI orchestrator, supplied here parametrically.
+Guarantees & Constraints:
+- Side-effect free: Operates strictly on in-memory lists of CommitNodes.
+- Deterministic: An identical array of CommitNodes will always yield identical ClusterGroups.
+- Idempotent: Can be run an infinite number of times yielding the exact same clusters.
+- Time-agnostic: Absolute time constraints are provided via injection, never `time.now()`.
+- Isolated: This module NEVER accesses the filesystem or reads from Git via subprocesses.
 """
 
-def generate_cluster_id(first_hash: str, last_hash: str) -> str:
+def _generate_cluster_id(first_commit_hash: str, last_commit_hash: str) -> str:
     """
-    Deterministically calculates a cluster ID based solely on bounding hashes.
+    Deterministically calculates a cluster ID based solely on the bounding hashes.
     
-    Hash function: sha256(first_hash + last_hash)
+    Formula: sha256(first_hash + last_hash)
     """
-    # TODO: Implement SHA256 concatenation
+    # TODO: Implement SHA256 deterministic concatenation logic
     pass
 
 def cluster_commits(
     commits: List[CommitNode],
-    inactivity_threshold_seconds: int = 7200,  # 120 minutes default
+    inactivity_threshold_seconds: int = 7200,
 ) -> List[ClusterGroup]:
     """
     Iterates sequentially through a time-sorted list of CommitNodes and partitions 
-    them into ClusterGroups based on the absolute `commit_clustering_rules.md`.
+    them into ClusterGroups bounded by hard-stop inactivity limits and explicit boundaries.
     
+    Args:
+        commits: A chronologically ordered list of raw CommitNodes from a single branch.
+        inactivity_threshold_seconds: The allowable time gap between consecutive 
+                                      commits before a new cluster is forced. Defaults to 120m.
+                                      
     Returns:
-        List[ClusterGroup]: A chronologically sorted list of distinct commitment clusters.
+        List[ClusterGroup]: A sequence of distinct, non-overlapping clusters.
     """
-    
-    # Validation
-    # TODO: Ensure commits array is chronologically sorted older -> newer.
-    
-    # State tracking
-    clusters = []
-    current_cluster_commits = []
-    
-    # Primary Iteration
-    # TODO: Loop over the commits. For each commit_x:
-    
-    # Boundary Rule Evaluation:
-    # 1. Check Rule A (Inactivity Timeout): 
-    #    IF (commit_x.timestamp - previous_commit.timestamp).seconds > inactivity_threshold_seconds THEN close cluster.
-    
-    # 2. Check Rule B (Branch Change):
-    #    IF commit_x.branch != previous_commit.branch THEN close cluster.
-    
-    # 3. Check Rule D (System Boundary):
-    #    IF previous_commit.author == "repopilot-daemon" THEN close cluster.
-    
-    # Note on Rule C (Tag Creation): 
-    # Evaluating whether a commit is the parent of a tag requires Git graph awareness, 
-    # which we do not have here. Let the GitReader slice arrays on tags before passing to this function.
+    # TODO: Validate that the input list is chronologically sorted
 
-    # TODO: Return finalized ClusterGroups mapped to the data schema.
+    # TODO: Handle the "Single Massive Commit" edge case early (Cluster size 1)
+
+    # Primary Iteration 
+    # TODO: Loop over consecutive commit pairs (previous_commit, current_commit)
+
+    # --- Rule Evaluations (Hard Stops) ---
     
-    return clusters
+    # TODO: Evaluate Rule A (Inactivity Timeout)
+    # IF (current_commit.timestamp - previous_commit.timestamp) > inactivity_threshold_seconds
+    # THEN seal current cluster.
+
+    # TODO: Evaluate Rule B (Branch Change)
+    # IF current_commit.branch != previous_commit.branch
+    # THEN seal current cluster.
+
+    # Note on Rule C (Tag Creation):
+    # As per clustering spec, tags attached directly to a child commit seal the cluster.
+    # The GitReader layer must inject tag markers or slice history at tags before calling this engine,
+    # because resolving topological tags requires external Git graph access.
+
+    # TODO: Evaluate Rule D (System Boundary)
+    # IF previous_commit.author == "repopilot-daemon"
+    # THEN seal current cluster immediately.
+
+    # TODO: Map accumulated subsets into formal `ClusterGroup` dataclasses
+    # Ensure start_timestamp <= end_timestamp
+    
+    # TODO: Call _generate_cluster_id for each finalized cluster
+    
+    # TODO: Return final List[ClusterGroup]
+    
+    return []
