@@ -18,6 +18,11 @@ Guarantees & Constraints:
 - Linear: Branch boundaries must be resolved upstream. This engine evaluates a strictly linear sequence.
 """
 
+# Stable Closure Reasons
+CLOSURE_REASON_SYSTEM_COMMIT = "SYSTEM_COMMIT"
+CLOSURE_REASON_INACTIVITY_TIMEOUT = "INACTIVITY_TIMEOUT"
+CLOSURE_REASON_HEAD = "HEAD"
+
 def _generate_cluster_id(first_commit_hash: str, last_commit_hash: str) -> str:
     """
     Deterministically calculates a cluster ID based solely on bounding hashes.
@@ -29,7 +34,8 @@ def _generate_cluster_id(first_commit_hash: str, last_commit_hash: str) -> str:
 
 def cluster_commits(
     commits: Sequence[CommitNode],
-    inactivity_threshold_seconds: int
+    inactivity_threshold_seconds: int,
+    system_authors: Sequence[str]
 ) -> List[ClusterGroup]:
     """
     Iterates sequentially through a time-sorted sequence of CommitNodes and partitions 
@@ -39,6 +45,8 @@ def cluster_commits(
         commits: A chronologically ordered, linear sequence of raw CommitNodes.
         inactivity_threshold_seconds: The allowable time gap between consecutive 
                                       commits before a new cluster is forced. REQUIRED.
+        system_authors: List of author names that represent system actions (e.g., daemon commits) 
+                        that force an immediate and independent cluster boundary. REQUIRED.
                                       
     Returns:
         List[ClusterGroup]: A sequence of distinct, non-overlapping clusters.
@@ -46,15 +54,15 @@ def cluster_commits(
     if not commits:
         return []
 
+    # Enforce or verify input ordering (oldest to newest)
+    sorted_commits = sorted(commits, key=lambda c: c.timestamp)
+
     clusters: List[ClusterGroup] = []
     current_cluster_commits: List[CommitNode] = []
     
-    # Assumption: The input list `commits` is chronologically sorted (oldest to newest).
-    # This must be guaranteed by the upstream git reader layer.
-    
     previous_commit = None
     
-    for current_commit in commits:
+    for current_commit in sorted_commits:
         if previous_commit is None:
             # First commit of the entire array initializes the first cluster
             current_cluster_commits.append(current_commit)
@@ -66,11 +74,11 @@ def cluster_commits(
         closure_reason = ""
         
         # Rule D: System Boundary
-        # IF previous_commit author matches the system daemon, it forces a boundary.
+        # IF previous_commit author matches any injected system author, it forces a boundary.
         # This prevents clustering user commits together with system auto-commits.
-        if previous_commit.author == "repopilot-daemon":
+        if previous_commit.author in system_authors:
             seal_cluster = True
-            closure_reason = "SYSTEM_COMMIT"
+            closure_reason = CLOSURE_REASON_SYSTEM_COMMIT
             
         # Rule A: Inactivity Timeout
         # Evaluated if no higher-priority boundary matched.
@@ -79,7 +87,7 @@ def cluster_commits(
             time_delta = current_commit.timestamp - previous_commit.timestamp
             if time_delta.total_seconds() > inactivity_threshold_seconds:
                 seal_cluster = True
-                closure_reason = "INACTIVITY_TIMEOUT"
+                closure_reason = CLOSURE_REASON_INACTIVITY_TIMEOUT
         
         if seal_cluster:
             # A boundary condition was met. We must seal the accumulated cluster.
@@ -115,7 +123,7 @@ def cluster_commits(
                 commits=current_cluster_commits,
                 start_timestamp=current_cluster_commits[0].timestamp,
                 end_timestamp=current_cluster_commits[-1].timestamp,
-                closure_reason="HEAD"  # The final open cluster is inherently capped by HEAD
+                closure_reason=CLOSURE_REASON_HEAD  # The final open cluster is inherently capped by HEAD
             )
         )
         
