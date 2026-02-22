@@ -12,8 +12,13 @@ Guarantees & Constraints:
 - Side-effect free: Operates purely on immutable, in-memory ClusterGroup data.
 - Deterministic: Identical ClusterGroups evaluate to identical ClassificationPayloads.
 - Idempotent: Evaluation can be repeated infinitely yielding the exact same output.
-- Isolated: This module NEVER accesses the filesystem or executes Git subprocesses.
 - Singular Output: Every cluster translates to exactly ONE primary classification.
+
+### Classification Layer Contract
+- **Responsibility:** Deterministically mapping grouped commits to a single categorization.
+- **NOT** Responsible For: Forming clusters, creating docs, querying Git, or executing shell paths.
+- **Allowed Inputs:** `ClusterGroup` sequences and injected heuristic thresholds.
+- **Output Guarantee:** Downstream layers may rely perfectly upon a single `primary_classification` string and `0.0 - 1.0` confidence score per cluster without recalculating original Git churn.
 """
 
 def classify_cluster(
