@@ -1,6 +1,5 @@
 import dataclasses
 from typing import Sequence
-from datetime import datetime
 
 from repopilot.core.models import ClassificationPayload
 
@@ -50,40 +49,145 @@ def evaluate_regeneration_policy(
         PolicyDecision: The definitive flags indicating which generators to invoke.
     """
     
-    # 1. EXPLICIT SKIP CONDITIONS (Anti-Churn Safeguards)
+    # ==========================================================================
+    # PHASE 1: ANTI-CHURN SAFEGUARDS (Short-Circuit Evaluation)
+    # ==========================================================================
+    # These checks form an ordered cascade of hard blockers. If ANY condition
+    # is tripped, we immediately return a fully-blocked PolicyDecision.
+    # Order matters: we check the most critical invariants first.
     
-    # TODO: Rule A: Protect System Loop
-    # IF is_system_commit THEN return False for all, reason="SYSTEM_AUTHOR"
-
-    # TODO: Rule B: Validate Execution Branch
-    # IF active_branch NOT in allowed_branches THEN return False for all, reason="UNAUTHORIZED_BRANCH"
-
-    # TODO: Rule C: Ignore Noise
-    # IF classification_result.primary_classification == "noise_only" THEN return False for all, reason="NOISE_SUPPRESSION"
-
-    # 2. DOCUMENT TRIGGERS (Evaluated Independently)
+    # -------------------------------------------------------------------------
+    # Rule A: SYSTEM LOOP PREVENTION
+    # -------------------------------------------------------------------------
+    # WHY BLOCKED: If the triggering commit was authored by RepoPilot itself
+    # (e.g., a previous doc regeneration commit), allowing regeneration would
+    # create an infinite feedback loop: regen -> commit -> trigger -> regen.
+    # This is the most critical anti-churn safeguard and must be checked first.
+    if is_system_commit:
+        return PolicyDecision(
+            regenerate_changelog=False,
+            regenerate_architecture_churn=False,
+            regenerate_development_metrics=False,
+            reason_skipped="SYSTEM_AUTHOR"
+        )
+    
+    # -------------------------------------------------------------------------
+    # Rule B: BRANCH AUTHORIZATION ENFORCEMENT
+    # -------------------------------------------------------------------------
+    # WHY BLOCKED: Documentation regeneration is only permitted on explicitly
+    # allowed branches (typically 'main' or 'master'). Regenerating docs on
+    # feature branches would pollute branch history and create merge conflicts.
+    # This check ensures docs are only updated on stable, canonical branches.
+    if active_branch not in allowed_branches:
+        return PolicyDecision(
+            regenerate_changelog=False,
+            regenerate_architecture_churn=False,
+            regenerate_development_metrics=False,
+            reason_skipped="UNAUTHORIZED_BRANCH"
+        )
+    
+    # -------------------------------------------------------------------------
+    # Rule C: NOISE SUPPRESSION
+    # -------------------------------------------------------------------------
+    # WHY BLOCKED: If the classification engine determined that ALL changes in
+    # the cluster are noise (lock files, IDE configs, generated assets, etc.),
+    # regenerating documentation would add no semantic value. This prevents
+    # doc churn from non-meaningful repository activity.
+    if classification_result.primary_classification == "noise_only":
+        return PolicyDecision(
+            regenerate_changelog=False,
+            regenerate_architecture_churn=False,
+            regenerate_development_metrics=False,
+            reason_skipped="NOISE_SUPPRESSION"
+        )
+    
+    # ==========================================================================
+    # PHASE 2: DOCUMENT-SPECIFIC TRIGGER EVALUATION
+    # ==========================================================================
+    # Each document type has independent triggers. A document regenerates if
+    # EITHER a semantic trigger (classification-based) OR a temporal trigger
+    # (time-based threshold) is satisfied. These are evaluated independently
+    # to allow granular control over which docs are updated.
     
     regen_changelog = False
     regen_arch = False
     regen_metrics = False
-
-    # TODO: CHANGELOG.md Logic Gate
-    # IF classification_result.primary_classification in ["feature_burst", "structural_change"]
-    # OR IF seconds_since_last_changelog_regen >= changelog_threshold_seconds
-    # THEN regen_changelog = True
-
-    # TODO: ARCHITECTURE_CHURN.md Logic Gate
-    # IF classification_result.primary_classification == "structural_change"
-    # OR IF seconds_since_last_architecture_regen >= architecture_threshold_seconds
-    # THEN regen_arch = True
-
-    # TODO: DEVELOPMENT_METRICS.md Logic Gate
-    # IF seconds_since_last_metrics_regen >= metrics_threshold_seconds
-    # THEN regen_metrics = True
-
-    # 3. CONSOLIDATION
     
-    # TODO: Compile conditions into PolicyDecision dataclass
-    # TODO: Infer `reason_skipped` if all booleans are False
+    # Extract classification for repeated use (no mutation, purely referential)
+    classification = classification_result.primary_classification
     
-    pass
+    # -------------------------------------------------------------------------
+    # CHANGELOG.md Logic Gate
+    # -------------------------------------------------------------------------
+    # SEMANTIC TRIGGERS:
+    #   - "feature_burst": New features warrant changelog entries to document
+    #     user-facing changes and maintain release notes accuracy.
+    #   - "structural_change": Architectural shifts (renames, config changes)
+    #     should be reflected in the changelog for visibility.
+    # TEMPORAL TRIGGER:
+    #   - If sufficient time has elapsed since last regeneration, refresh the
+    #     changelog to capture any accumulated changes regardless of type.
+    
+    semantic_changelog_trigger = classification in ("feature_burst", "structural_change")
+    temporal_changelog_trigger = seconds_since_last_changelog_regen >= changelog_threshold_seconds
+    
+    if semantic_changelog_trigger or temporal_changelog_trigger:
+        regen_changelog = True
+    
+    # -------------------------------------------------------------------------
+    # ARCHITECTURE_CHURN.md Logic Gate
+    # -------------------------------------------------------------------------
+    # SEMANTIC TRIGGER:
+    #   - "structural_change": Only structural changes (file renames, config
+    #     modifications) warrant architecture documentation updates. Feature
+    #     additions or refactors don't affect architectural documentation.
+    # TEMPORAL TRIGGER:
+    #   - Periodic refresh ensures architecture docs don't become stale even
+    #     if no single cluster triggered the semantic condition.
+    
+    semantic_arch_trigger = classification == "structural_change"
+    temporal_arch_trigger = seconds_since_last_architecture_regen >= architecture_threshold_seconds
+    
+    if semantic_arch_trigger or temporal_arch_trigger:
+        regen_arch = True
+    
+    # -------------------------------------------------------------------------
+    # DEVELOPMENT_METRICS.md Logic Gate
+    # -------------------------------------------------------------------------
+    # NO SEMANTIC TRIGGER:
+    #   - Metrics documentation is classification-agnostic. It aggregates
+    #     quantitative data (commit counts, churn rates, contributor stats)
+    #     regardless of the semantic nature of the changes.
+    # TEMPORAL TRIGGER ONLY:
+    #   - Metrics are regenerated purely on a time-based schedule to provide
+    #     periodic snapshots of development velocity and patterns.
+    
+    temporal_metrics_trigger = seconds_since_last_metrics_regen >= metrics_threshold_seconds
+    
+    if temporal_metrics_trigger:
+        regen_metrics = True
+    
+    # ==========================================================================
+    # PHASE 3: DECISION CONSOLIDATION
+    # ==========================================================================
+    # Compile all evaluated flags into the final PolicyDecision. If no document
+    # types were triggered, emit a diagnostic reason for observability/debugging.
+    
+    # Determine skip reason if all regenerations are blocked at the trigger level
+    # (as opposed to being blocked by anti-churn safeguards in Phase 1).
+    if not regen_changelog and not regen_arch and not regen_metrics:
+        # No triggers fired. Construct a diagnostic reason based on the
+        # classification that passed anti-churn but didn't match any trigger.
+        # This aids debugging by distinguishing "blocked by safeguard" from
+        # "no trigger condition met".
+        reason = f"NO_TRIGGERS_FIRED:classification={classification}"
+    else:
+        # At least one document will be regenerated; no skip reason needed.
+        reason = ""
+    
+    return PolicyDecision(
+        regenerate_changelog=regen_changelog,
+        regenerate_architecture_churn=regen_arch,
+        regenerate_development_metrics=regen_metrics,
+        reason_skipped=reason
+    )
