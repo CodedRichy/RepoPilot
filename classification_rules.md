@@ -2,65 +2,81 @@
 
 This document defines the heuristic rules for classifying Git commit clusters into discrete categories without relying on Machine Learning or LLMs.
 
-## 1. Structural Change (`structural_change`)
+## Classification Semantics
 
-**Definition:** Significant architectural shifts, dependency updates, or repository reorganizations.
+1.  **Exclusivity:** A commit cluster is assigned exactly ONE primary classification.
+2.  **Strict Evaluation Order:** Rules are evaluated from highest priority to lowest priority.
+3.  **Short-Circuiting:** The evaluation immediately halts upon the first rule that triggers a match.
+4.  **Secondary Signals:** Metrics not triggering the primary classification (e.g., a documentation file touched during a massive refactor) may be recorded in the output schema but MUST NOT alter the primary classification decision.
 
-*   **Signals Used:**
-    *   File rename/move operations extracted from Git diff statuses (`R` status).
-    *   Modifications to root-level configuration files (e.g., `package.json`, `Cargo.toml`, `docker-compose.yml`, `tsconfig.json`).
-    *   Ratio of total files touched to total lines changed (many files, few lines per file often indicates a structural renaming).
-*   **Thresholds:**
-    *   `> 5` files renamed or moved in a single cluster.
-    *   **OR** modifications detected in known configuration files.
-    *   **OR** `> 20` files touched where `(insertions + deletions) / files < 10` lines per file.
-*   **False Positives to Watch Out For:** 
-    *   Running an automated code formatter (e.g., Prettier, Black) across the repository, which touches many files with low lines-per-file churn. (Mitigation: check for pure whitespace diffs if possible).
-    *   Mass automated Find & Replace of a single variable name.
+## Priority Order
 
-## 2. Refactor Cluster (`refactor_cluster`)
+The engine evaluates commit clusters in the following top-down sequence:
 
-**Definition:** Improvements to existing code structure without adding significant net-new functionality.
+1.  `noise_only`
+2.  `structural_change`
+3.  `feature_burst`
+4.  `refactor_cluster`
 
-*   **Signals Used:**
-    *   Insertion-to-Deletion ratio.
-    *   Absence of new file creations (`A` status).
-    *   Conventional Commit prefixes (if present: `refactor:`, `chore:`, `cleanup:`).
-*   **Thresholds:**
-    *   `Lines Deleted >= Lines Inserted * 0.8` (high deletion ratio or near 1:1 replacement).
-    *   **AND** `New Files Created == 0`.
-    *   **AND** `Total Files Touched <= 15` (to differentiate from a repository-wide structural change).
-*   **False Positives to Watch Out For:**
-    *   Completely deleting a deprecated feature (technically a feature removal, not a refactor, though the impact is similar).
-    *   Swapping out a major library dependency where the new implementation requires roughly the same amount of code as the old one.
+**Why this order exists:**
+*   **Noise First:** Trivial changes (like formatting or single-character typos in READMEs) should never be accidentally flagged as "Features" or "Refactors" just because they mathematically match a deletion ratio. They are immediately filtered out.
+*   **Structure Before Features:** Large configuration shifts (like renaming the root `src/` directory to `app/`) will contain massive file churn and technically look like new code additions. We must catch configuration/renaming events before they are misclassified as `feature_bursts`.
+*   **Features Before Refactors:** "Net-new code" (adding new capabilities) is prioritized over "Optimized code". If a developer adds a new module and cleans up an old one in the same cluster, the introduction of totally new capabilities is deemed more significant to the project's evolution.
+
+## 1. Noise Only (`noise_only`)
+
+**Definition:** Evaluated FIRST. Trivial or metadata-only modifications that do not impact the execution logic of the software. Excludes potential bug fixes.
+
+*   **Executable Conditions:**
+    *   `IF` ALL modified files match extensions: `[.md, .txt, .gitignore, .dockerignore]`
+    *   `OR` ALL modified files exist strictly within directories: `[docs/, .github/, .vscode/]`
+    *   `THEN` classify as `noise_only` AND short-circuit evaluation.
+
+*   **Correct Classification Example:** A cluster that modifies `docs/api.md` and updates a typo in `README.md`.
+*   **Deliberately Avoided Example:** A single-line change to `src/utils.js` changing `<` to `<=`. (Because the file extension `.js` and path `src/` are not in the approved noise lists, it fails the `noise_only` condition and falls through to the next rule).
+
+## 2. Structural Change (`structural_change`)
+
+**Definition:** Computable architectural shifts or repository reorganizations. Formatter noise is strictly mitigated.
+
+*   **Signals Used (Computable Only):**
+    *   Git status `R` (Renames).
+    *   Absolute paths of configuration files.
+*   **Threshold Constants:**
+    *   `MIN_RENAMES = 5`
+*   **Executable Conditions:**
+    *   `IF` count of files with Git status `R` >= `MIN_RENAMES`
+    *   `OR` ANY modified file exactly matches: `package.json`, `Cargo.toml`, `go.mod`, `docker-compose.yml`, `tsconfig.json`
+    *   `THEN` classify as `structural_change` AND short-circuit.
+
+*   **v1 Limitations:**
+    *   Cannot detect "mass Find & Replace" operations reliably without AST parsing (removed from v1).
+    *   Cannot definitively distinguish an automated formatter (Prettier/Black) touching 100 files from a human touching 100 files based purely on `git log` stats without calculating per-hunk whitespace diffs (removed from v1).
 
 ## 3. Feature Burst (`feature_burst`)
 
-**Definition:** Active development of new capabilities, marked by new files and net-positive code growth.
+**Definition:** Sustained development of new capabilities extending over time or a sequence of commits, strictly ignoring generated/vendor artifacts.
 
 *   **Signals Used:**
-    *   Creation of net-new source files (`A` status in `src/`, `lib/`, `app/` directories).
-    *   Net-positive line churn (significantly more insertions than deletions).
-    *   Presence of test files added alongside source files (e.g., `*_test.py` or `*.spec.ts`).
-*   **Thresholds:**
-    *   `Insertions > Deletions * 3` (substantial code growth).
-    *   **AND** `> 0` new source files created.
-    *   **AND** `Total Insertions > 50` (filters out trivial additions).
-*   **False Positives to Watch Out For:**
-    *   Checking in auto-generated build artifacts (e.g., `dist/bundle.js`) or bulk vendor files. (Mitigation: strictly ignore known build/vendor directories).
-    *   Updating massive machine-generated lockfiles (e.g., `package-lock.json`, `Cargo.lock`).
+    *   Commit count within the cluster.
+    *   Git status `A` (Added files).
+    *   File path exclusion lists.
+*   **Minimum Conditions:**
+    *   `IF` cluster contains >= `3` distinct commits within a `24h` window
+    *   `AND` count of files with Git status `A` > `0` (excluding paths matching `vendor/`, `node_modules/`, `dist/`, `build/`, `.min.js`)
+    *   `AND` total insertions > total deletions in the cluster
+    *   `THEN` classify as `feature_burst` AND short-circuit.
 
-## 4. Noise Only (`noise_only`)
+*   **False-Positive Avoided:** A single massive commit dumping 500 files into `vendor/`. Because the path matches the exclusion list, the `A` status count evaluates to 0, failing the condition and falling through to refactor/fallback.
 
-**Definition:** Trivial modifications that do not impact the execution logic of the software.
+## 4. Refactor Cluster (`refactor_cluster`)
 
-*   **Signals Used:**
-    *   File extensions (e.g., `.md`, `.txt`).
-    *   Directory paths (e.g., `docs/`, `.github/workflows/` depending on context, `.husky/`).
-    *   Total absolute churn (very low line counts).
-*   **Thresholds:**
-    *   `100%` of modified files have matching extensions (`.md`, `.txt`) or are in documentation directories.
-    *   **OR** `(Insertions + Deletions) < 5` lines overall in the entire cluster.
-*   **False Positives to Watch Out For:**
-    *   A critical 1-line bug fix (e.g., changing a `<` to a `<=`). (Mitigation: Do not classify low churn as noise if the commit message contains `fix`, `bug`, or `hotfix`).
-    *   A 1-line version bump in a package registry file, which triggers deployment pipelines.
+**Definition:** The final fallback classification for a cluster that alters code but does not meet the strict thresholds for noise, structural shifts, or sustained feature bursts.
+
+*   **Executable Conditions (Fallback):**
+    *   `IF` execution reaches this rule (meaning it is NOT noise, NOT structural, and NOT a feature burst)
+    *   `AND` total file deletions < total file modifications (to ensure it isn't purely a deprecation/deletion event)
+    *   `THEN` classify as `refactor_cluster`.
+
+*   **Why this rule must be last:**
+    Refactoring is the "dark matter" of development—it is the modification of existing logic. Because a feature burst or a structural renaming *also* modifies existing logic, `refactor_cluster` must act as the default bucket for code churn that failed to trigger the highly specific, strictly threshold-driven signatures of the primary classifications. It explicitly ignores commit prefixes (e.g., `refactor:`) as developers frequently mislabel or omit them.
